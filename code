@@ -1,0 +1,377 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <Wire.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
+#include <DHT.h>
+#include <ESP32Servo.h>
+
+// ================= WIFI =================
+const char* ssid = "YOUR_WIFI_NAME";
+const char* password = "YOUR_WIFI_PASSWORD";
+
+// ================= WEB SERVER =================
+WebServer server(80);
+
+// ================= OLED =================
+#define SCREEN_WIDTH 128
+#define SCREEN_HEIGHT 64
+
+Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, -1);
+
+// ================= DHT =================
+#define DHTPIN 4
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+// ================= PINS =================
+#define SOIL_SENSOR 34
+#define RAIN_SENSOR 27
+#define FIRE_SENSOR 33
+#define IR_SENSOR 13
+#define BUZZER 15
+
+// Ultrasonic
+#define TRIG_PIN 5
+#define ECHO_PIN 23
+
+// Servo
+#define SERVO_PIN 18
+Servo servoMotor;
+
+// ================= VARIABLES =================
+int soilValue;
+int rainValue;
+int fireValue;
+int irValue;
+
+float temperature;
+float humidity;
+
+long duration;
+int distance;
+
+// ======================================================
+// HTML WEBPAGE
+// ======================================================
+
+String webpage() {
+
+  String html = R"rawliteral(
+
+<!DOCTYPE html>
+<html>
+<head>
+
+<title>Smart Irrigation Dashboard</title>
+
+<meta http-equiv="refresh" content="2">
+
+<style>
+
+body{
+background:#0f172a;
+font-family:Arial;
+color:white;
+text-align:center;
+}
+
+h1{
+color:#38bdf8;
+}
+
+.container{
+display:grid;
+grid-template-columns:repeat(auto-fit,minmax(220px,1fr));
+gap:20px;
+padding:20px;
+}
+
+.card{
+background:#1e293b;
+padding:20px;
+border-radius:20px;
+box-shadow:0 0 10px rgba(0,0,0,0.5);
+}
+
+.value{
+font-size:28px;
+margin-top:10px;
+color:#22c55e;
+}
+
+.alert{
+color:red;
+font-weight:bold;
+}
+
+.safe{
+color:lime;
+font-weight:bold;
+}
+
+</style>
+</head>
+
+<body>
+
+<h1>SMART IRRIGATION SYSTEM</h1>
+
+<div class="container">
+
+<div class="card">
+<h2>Temperature</h2>
+<div class="value">)rawliteral";
+
+  html += String(temperature);
+  html += R"rawliteral( °C</div>
+</div>
+
+<div class="card">
+<h2>Humidity</h2>
+<div class="value">)rawliteral";
+
+  html += String(humidity);
+  html += R"rawliteral( %</div>
+</div>
+
+<div class="card">
+<h2>Soil Moisture</h2>
+<div class="value">)rawliteral";
+
+  html += String(soilValue);
+
+  html += R"rawliteral(</div>
+</div>
+
+<div class="card">
+<h2>Rain Sensor</h2>
+<div class="value">)rawliteral";
+
+  if(rainValue == LOW)
+    html += "<span class='alert'>RAIN DETECTED</span>";
+  else
+    html += "<span class='safe'>NO RAIN</span>";
+
+  html += R"rawliteral(</div>
+</div>
+
+<div class="card">
+<h2>Fire Sensor</h2>
+<div class="value">)rawliteral";
+
+  if(fireValue == LOW)
+    html += "<span class='alert'>FIRE DETECTED</span>";
+  else
+    html += "<span class='safe'>SAFE</span>";
+
+  html += R"rawliteral(</div>
+</div>
+
+<div class="card">
+<h2>Animal Detection</h2>
+<div class="value">)rawliteral";
+
+  if(irValue == LOW)
+    html += "<span class='alert'>ANIMAL DETECTED</span>";
+  else
+    html += "<span class='safe'>NO ANIMAL</span>";
+
+  html += R"rawliteral(</div>
+</div>
+
+<div class="card">
+<h2>Water Level</h2>
+<div class="value">)rawliteral";
+
+  html += String(distance);
+  html += R"rawliteral( cm</div>
+</div>
+
+</div>
+
+</body>
+</html>
+
+)rawliteral";
+
+  return html;
+}
+
+// ======================================================
+// HANDLE ROOT PAGE
+// ======================================================
+
+void handleRoot() {
+  server.send(200, "text/html", webpage());
+}
+
+// ======================================================
+// SETUP
+// ======================================================
+
+void setup() {
+
+  Serial.begin(115200);
+
+  pinMode(RAIN_SENSOR, INPUT);
+  pinMode(FIRE_SENSOR, INPUT);
+  pinMode(IR_SENSOR, INPUT);
+
+  pinMode(BUZZER, OUTPUT);
+
+  pinMode(TRIG_PIN, OUTPUT);
+  pinMode(ECHO_PIN, INPUT);
+
+  dht.begin();
+
+  servoMotor.attach(SERVO_PIN);
+  servoMotor.write(0);
+
+  // OLED
+  if(!display.begin(SSD1306_SWITCHCAPVCC, 0x3C)) {
+    Serial.println("OLED Failed");
+    while(1);
+  }
+
+  display.clearDisplay();
+  display.setTextSize(2);
+  display.setTextColor(WHITE);
+
+  display.setCursor(0,20);
+  display.println("CONNECTING");
+
+  display.display();
+
+  // WIFI CONNECT
+  WiFi.begin(ssid, password);
+
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi Connected");
+
+  // SHOW IP ADDRESS
+  Serial.println(WiFi.localIP());
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setCursor(0,0);
+  display.println("WiFi Connected");
+
+  display.setCursor(0,20);
+  display.println(WiFi.localIP());
+
+  display.display();
+
+  delay(5000);
+
+  // WEB SERVER
+  server.on("/", handleRoot);
+
+  server.begin();
+
+  Serial.println("Server Started");
+}
+
+// ======================================================
+// LOOP
+// ======================================================
+
+void loop() {
+
+  // ================= READ SENSORS =================
+
+  soilValue = analogRead(SOIL_SENSOR);
+
+  rainValue = digitalRead(RAIN_SENSOR);
+
+  fireValue = digitalRead(FIRE_SENSOR);
+
+  irValue = digitalRead(IR_SENSOR);
+
+  temperature = dht.readTemperature();
+
+  humidity = dht.readHumidity();
+
+  // ================= ULTRASONIC =================
+
+  digitalWrite(TRIG_PIN, LOW);
+  delayMicroseconds(2);
+
+  digitalWrite(TRIG_PIN, HIGH);
+  delayMicroseconds(10);
+
+  digitalWrite(TRIG_PIN, LOW);
+
+  duration = pulseIn(ECHO_PIN, HIGH);
+
+  distance = duration * 0.034 / 2;
+
+  // ================= SERVO =================
+
+  if(soilValue > 2500) {
+    servoMotor.write(90);
+  }
+  else {
+    servoMotor.write(0);
+  }
+
+  // ================= BUZZER =================
+
+  if(fireValue == LOW || irValue == LOW || distance > 20) {
+    digitalWrite(BUZZER, HIGH);
+  }
+  else {
+    digitalWrite(BUZZER, LOW);
+  }
+
+  // ================= OLED DISPLAY =================
+
+  display.clearDisplay();
+
+  display.setTextSize(1);
+
+  display.setCursor(0,0);
+  display.print("Temp:");
+  display.print(temperature);
+
+  display.setCursor(0,10);
+  display.print("Hum:");
+  display.print(humidity);
+
+  display.setCursor(0,20);
+  display.print("Soil:");
+  display.print(soilValue);
+
+  display.setCursor(0,30);
+  display.print("Water:");
+  display.print(distance);
+
+  display.setCursor(0,40);
+
+  if(fireValue == LOW)
+    display.println("FIRE DETECTED");
+
+  else if(irValue == LOW)
+    display.println("ANIMAL DETECTED");
+
+  else if(rainValue == LOW)
+    display.println("RAIN DETECTED");
+
+  else
+    display.println("SYSTEM NORMAL");
+
+  display.display();
+
+  // ================= HANDLE WEB =================
+
+  server.handleClient();
+
+  delay(1000);
+}
